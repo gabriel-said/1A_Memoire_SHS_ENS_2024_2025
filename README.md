@@ -1,5 +1,5 @@
 # Memoire 1A de SHS (ENS 2024/2025) : La consommation des substances psychoactives comme stratégie de coping : étude des sportifs espoirs dans les pôles espoirs.
---
+-
 Elouan RABREAU (2SEP) et Gabriel SAID (2SEP) sous la direction de Stéphane HÉAS (VIPS2) et Boris Cheval (ENS Rennes)
 --
 ## Description
