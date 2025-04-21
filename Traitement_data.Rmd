@@ -1,0 +1,943 @@
+```{r}
+# Chargement des bibliothèques
+library(tidyr)
+library(purrr)
+library(writexl)
+library(openxlsx)
+library(ggplot2)
+library(ggpubr)
+library(tidyverse)
+library(stats)
+library(dplyr)
+library(rstatix)
+library(gplots)
+library(vcd)
+library(corrplot)
+library(ggcorrplot)
+library(purrr)
+library(Hmisc)
+library(reshape2)
+library(circlize)
+library(ComplexHeatmap)
+library(ggtext)
+
+theme_memoire <- theme_minimal() +
+  theme(
+    text = element_text(family = "Arial", color = "black"),
+    axis.title = element_text(size = 12, face = "bold"),
+    axis.text = element_text(size = 10),
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+    legend.title = element_text(size = 11, face = "bold"),
+    legend.text = element_text(size = 10)
+  )
+
+# Palette de couleurs cohérente
+palette_memoire <- c("skyblue", "steelblue", "darkblue", "lightblue")
+```
+
+```{r Importation des données}
+ data <- read.xlsx(file.choose(), sep=";")
+head(data)
+summary(data)
+```
+```{r Analyse du questionnaire ASQ14}
+# Sélectionner les questions du ASQ-14
+questions_asq <- c("Dispute_Maison", "Incomprehension_Parents", "Pression_Etudes", "Difficulte_Scolaire", 
+                   "Obligation_Scolaire", "Temps_Ami", "Apparence", "Desaccords_Pairs", 
+                   "Non_Ecoute_Profs", "Desaccords_Profs", "Inquietude_Avenir",
+                   "Manque_Liberte", "Manque_Argent", "Responsabilites_familiales")
+
+# Créer un vecteur avec les libellés complets des questions
+libelles_questions <- c("Se disputer à la Maison", 
+                      "Sentir un manque de compréhension de la part de ses parents", 
+                      "La pression des études", 
+                      "Avoir des difficultés dans certaines matières scolaires", 
+                      "Être soumis à l'obligation scolaire", 
+                      "Ne pas avoir assez de temps pour votre petit(e) ami(e)", 
+                      "Ne pas être satisfait de son apparence", 
+                      "Avoir des désaccords entre vous et vos pairs", 
+                      "Ne pas être écouté par les enseignants", 
+                      "Avoir des désaccords entre vous et vos professeurs", 
+                      "S'inquiéter pour son avenir",
+                      "Manquer de liberté", 
+                      "Ne pas avoir assez d'argent pour acheter les choses que vous voulez", 
+                      "Devoir assumer de nouvelles responsabilités familiales en vieillissant")
+
+# Créer un dataframe de correspondance entre codes et libellés
+correspondance_questions <- data.frame(
+  Question = questions_asq,
+  Libelle = libelles_questions
+)
+
+# Fonction pour créer un résumé statistique par question
+summarize_questions <- function(df, question_cols, correspondance) {
+  df %>%
+    select(all_of(question_cols)) %>%
+    summarise(across(everything(), 
+                    list(
+                      mean = ~mean(., na.rm = TRUE),
+                      sd = ~sd(., na.rm = TRUE),
+                      median = ~median(., na.rm = TRUE),
+                      q1 = ~quantile(., 0.25, na.rm = TRUE),
+                      q3 = ~quantile(., 0.75, na.rm = TRUE)
+                    ))) %>%
+    pivot_longer(cols = everything(),
+                 names_to = c("Question", "Stat"),
+                 names_pattern = "(.*)_(.*)") %>%
+    left_join(correspondance, by = "Question") %>%
+    pivot_wider(names_from = Stat, values_from = value)
+}
+
+# Calcul des statistiques descriptives
+asq_summary <- summarize_questions(data, questions_asq, correspondance_questions)
+
+# Visualisation des moyennes et écarts-types 
+asq_summary %>%
+  ggplot(aes(x = reorder(Libelle, mean), y = mean)) +
+  geom_bar(stat = "identity", fill = palette_memoire[1], alpha = 0.8, width = 0.7) +
+  geom_errorbar(aes(ymin = pmax(0, mean - sd), ymax = pmin(4, mean + sd)), 
+                width = 0.4, color = "black") +
+  labs(title = "Niveau de Stress par Source (ASQ-14)",
+       subtitle = "Moyennes et Écarts-Types",
+       x = NULL,  # Supprimer le titre de l'axe X pour plus de clarté
+       y = "Niveau Moyen (0-4)") +
+  coord_flip() +
+  theme_memoire +
+  theme(
+    axis.text.y = element_text(size = 8),  # Réduire la taille du texte des libellés
+    plot.margin = margin(5, 15, 5, 5, "pt"),  # Ajuster les marges
+    panel.grid.major.y = element_blank(),  # Supprimer les lignes de grille horizontales
+    axis.title.x = element_text(margin = margin(t = 10)),  # Espacer le titre de l'axe X
+    plot.title = element_text(hjust = 0.5),  # Centrer le titre
+    plot.subtitle = element_text(hjust = 0.5)  # Centrer le sous-titre
+  ) +
+  scale_y_continuous(limits = c(0, 4), breaks = seq(0, 4, 0.5), expand = c(0, 0)) +
+  # Ajouter une petite marge à droite pour les barres d'erreur
+  scale_x_discrete(expand = expansion(add = c(0.5, 1)))
+
+# Calcul du score total ASQ-14 pour chaque participant 
+data <- data %>%
+  rowwise() %>%
+  mutate(ASQ14_Score = sum(c_across(all_of(questions_asq)), na.rm = TRUE)) %>%
+  ungroup()
+
+# Créer d'abord une table de fréquence pour identifier les scores qui ont des participants
+score_counts <- table(data$ASQ14_Score)
+
+# Extraire les scores qui ont au moins un participant
+scores_with_data <- as.numeric(names(score_counts[score_counts > 0]))
+
+# Distribution du score total
+# Calculer les statistiques pour les breaks de l'axe x
+min <- min(data$ASQ14_Score, min(data$ASQ14_Score), na.rm = TRUE)
+q1 <- quantile(data$ASQ14_Score, 0.25, na.rm = TRUE)
+med <- median(data$ASQ14_Score, na.rm = TRUE)
+avg <- mean(data$ASQ14_Score, na.rm = TRUE)
+q3 <- quantile(data$ASQ14_Score, 0.75, na.rm = TRUE)
+max <- max(data$ASQ14_Score, max(data$ASQ14_Score), na.rm = TRUE)
+
+# Créer le vecteur de breaks et les étiquettes correspondantes
+stat_breaks <- c(min, q1, med, avg, q3, max)
+stat_labels <- c(
+  paste0("Minimal (", round(min, 1), ")"),
+  paste0("1er Quartile (", round(q1, 1), ")"),
+  paste0("Médiane (", round(med, 1), ")"),
+  paste0("Moyenne (", round(avg, 1), ")"),
+  paste0("3ème Quartile (", round(q3, 1), ")"),
+  paste0("Maximal (", round(max, 1), ")")
+)
+
+
+ggplot(data, aes(x = ASQ14_Score)) +
+  geom_histogram(binwidth = 1, fill = palette_memoire[1], color = "black", alpha = 0.7) +
+  geom_text(stat = "count", aes(label = after_stat(x)), vjust = -0.5, size = 3) +
+  # Ajouter des petites lignes rouges sous les étiquettes statistiques
+  # Ces lignes sont juste en dessous de l'axe x (à la position y = -0.15)
+  geom_segment(aes(x = q1, xend = q1, y = -0.3, yend = -0.01), 
+               color = "red", size = 0.75) +
+  geom_segment(aes(x = med, xend = med, y = -0.3, yend = -0.01), 
+               color = "red", size = 0.75) +
+  geom_segment(aes(x = avg, xend = avg, y = -0.3, yend = -0.01), 
+               color = "red", size = 0.75) +
+  geom_segment(aes(x = q3, xend = q3, y = -0.3, yend = -0.01), 
+               color = "red", size = 0.75) +
+  geom_segment(aes(x = min, xend = min, y = -0.3, yend = -0.01), 
+               color = "red", size = 0.75) +
+  geom_segment(aes(x = max, xend = max, y = -0.3, yend = -0.01), 
+               color = "red", size = 0.75) +
+  
+  labs(title = "Distribution des Scores Totaux ASQ-14",
+       x = "Score Total",
+       y = "Nombre de Participants") +
+  # Utiliser les statistiques calculées comme breaks et leurs noms comme étiquettes
+  scale_x_continuous(breaks = stat_breaks, labels = stat_labels) +
+  # Étendre les limites de l'axe y pour montrer les segments rouges
+  coord_cartesian(ylim = c(-0.15, 5.5)) +
+  theme_memoire +
+  # Rotation des étiquettes pour améliorer la lisibilité et éviter le chevauchement
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
+
+
+# Test de normalité pour le score ASQ-14 (inchangé)
+asq_normality <- shapiro.test(data$ASQ14_Score)
+asq_normality_text <- ifelse(asq_normality$p.value < 0.05,
+                             "La distribution n'est pas normale (p < 0.05)",
+                             "La distribution est normale (p >= 0.05)")
+
+# QQ-plot pour la normalité (inchangé)
+ggplot(data, aes(sample = ASQ14_Score)) +
+  geom_qq() +
+  geom_qq_line() +
+  labs(title = "Q-Q Plot du Score ASQ-14",
+       subtitle = asq_normality_text,
+       x = "Quantiles théoriques",
+       y = "Quantiles observés") +
+  theme_memoire
+
+# Statistiques descriptives complètes
+summary(data$ASQ14_Score)
+```
+
+
+```{r Analyse du questionnaire ASQ14 par items}
+# Définir les questions de l'ASQ-14
+questions_asq <- c("Dispute_Maison", "Incomprehension_Parents", "Pression_Etudes", "Difficulte_Scolaire", 
+                   "Obligation_Scolaire", "Temps_Ami", "Apparence", "Desaccords_Pairs", 
+                   "Non_Ecoute_Profs", "Desaccords_Profs", "Inquietude_Avenir",
+                   "Manque_Liberte", "Manque_Argent", "Responsabilites_familiales")
+
+# Créer les catégories de stress et leurs questions associées
+categories_stress <- list(
+  "Stress de la vie familiale" = c("Dispute_Maison", "Incomprehension_Parents"),
+  "Stress lié aux résultats scolaires / à l'assiduité scolaire" = c("Pression_Etudes", "Difficulte_Scolaire", "Obligation_Scolaire"),
+  "Stress lié à des relations amoureuses" = c("Temps_Ami"),
+  "Stress lié à la pression des pairs" = c("Apparence", "Desaccords_Pairs"),
+  "Stress lié à l'interaction avec l'enseignant" = c("Non_Ecoute_Profs", "Desaccords_Profs"),
+  "Stress lié à l'incertitude de l'avenir" = c("Inquietude_Avenir"),
+  "Stress lié au conflit entre l'école et les loisirs" = c("Manque_Liberte"),
+  "Stress lié à la pression financière" = c("Manque_Argent"),
+  "Stress lié à la vie d'adulte" = c("Responsabilites_familiales")
+)
+
+# Créer une fonction pour calculer les moyennes par catégorie
+calculate_category_means <- function(df, categories) {
+  # Initialiser un dataframe pour stocker les résultats
+  results <- data.frame(
+    Categorie = names(categories),
+    mean = numeric(length(categories)),
+    sd = numeric(length(categories)),
+    n_questions = sapply(categories, length),
+    stringsAsFactors = FALSE
+  )
+  
+  # Calculer la moyenne et l'écart-type pour chaque catégorie
+  for (i in seq_along(categories)) {
+    cat_name <- names(categories)[i]
+    cat_questions <- categories[[i]]
+    
+    # Calculer la moyenne des moyennes des questions dans cette catégorie pour chaque participant
+    if (length(cat_questions) > 1) {
+      category_values <- df %>%
+        select(all_of(cat_questions)) %>%
+        rowwise() %>%
+        mutate(cat_mean = mean(c_across(everything()), na.rm = TRUE)) %>%
+        pull(cat_mean)
+    } else {
+      # Si une seule question, prendre directement cette valeur
+      category_values <- df[[cat_questions]]
+    }
+    
+    results$mean[i] <- mean(category_values, na.rm = TRUE)
+    results$sd[i] <- sd(category_values, na.rm = TRUE)
+  }
+  
+  # Créer les étiquettes avec le nombre de questions en dessous
+  results$label_categorie <- paste0(results$Categorie)
+  results$subtitle <- paste0("(", results$n_questions, " question", ifelse(results$n_questions > 1, "s", ""), ")")
+  
+  return(results)
+}
+
+# Calculer les statistiques par catégorie
+category_stats <- calculate_category_means(data, categories_stress)
+
+# Créer un nouveau facteur pour gérer l'ordre des catégories
+category_stats$Categorie_factor <- factor(category_stats$Categorie, 
+                                         levels = category_stats$Categorie[order(category_stats$mean)])
+
+# Créer le graphique avec les étiquettes en deux lignes
+ggplot(category_stats, aes(x = Categorie_factor, y = mean)) +
+  geom_bar(stat = "identity", fill = palette_memoire[1], alpha = 0.8, width = 0.7) +
+  geom_errorbar(aes(ymin = pmax(0, mean - sd), ymax = pmin(4, mean + sd)), 
+                width = 0.4, color = "black") +
+  labs(title = "Niveau de Stress par Catégorie",
+       subtitle = "Moyennes et Écarts-Types",
+       x = NULL,
+       y = "Niveau Moyen (0-4)") +
+  coord_flip() +
+  theme_memoire +
+  theme(
+    axis.text.y = element_text(size = 9),
+    plot.margin = margin(5, 15, 5, 5, "pt"),
+    panel.grid.major.y = element_blank(),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  ) +
+  scale_y_continuous(limits = c(0, 4), breaks = seq(0, 4, 0.5), expand = c(0, 0)) +
+  scale_x_discrete(expand = expansion(add = c(0.5, 1)), 
+                  labels = function(x) {
+                    labels <- category_stats$label_categorie[match(x, category_stats$Categorie)]
+                    subtitles <- category_stats$subtitle[match(x, category_stats$Categorie)]
+                    paste0(labels, "\n", "<span style='font-size:7pt; color:gray'>", subtitles, "</span>")
+                  }) +
+  theme(axis.text.y = element_markdown())
+
+# Version alternative avec ggtext pour un meilleur contrôle de la mise en forme
+ggplot(category_stats, aes(x = reorder(Categorie, mean), y = mean)) +
+  geom_bar(stat = "identity", fill = palette_memoire[1], alpha = 0.8, width = 0.7) +
+  geom_errorbar(aes(ymin = pmax(0, mean - sd), ymax = pmin(4, mean + sd)), 
+                width = 0.4, color = "black") +
+  labs(title = "Niveau de Stress par Catégorie",
+       subtitle = "Moyennes et Écarts-Types",
+       x = NULL,
+       y = "Niveau Moyen (0-4)") +
+  coord_flip() +
+  theme_memoire +
+  theme(
+    axis.text.y = element_markdown(size = 9),
+    plot.margin = margin(5, 15, 5, 5, "pt"),
+    panel.grid.major.y = element_blank(),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    plot.title = element_text(hjust = 0.5),
+    plot.subtitle = element_text(hjust = 0.5)
+  ) +
+  scale_y_continuous(limits = c(0, 4), breaks = seq(0, 4, 0.5), expand = c(0, 0)) +
+  scale_x_discrete(expand = expansion(add = c(0.5, 1)), 
+                  labels = function(x) {
+                    map_idx <- match(x, category_stats$Categorie)
+                    paste0(category_stats$Categorie[map_idx], 
+                          "<br><span style='font-size:7pt; color:gray'>", 
+                          category_stats$subtitle[map_idx], "</span>")
+                  })
+
+# Statistiques descriptives des catégories
+print(category_stats)
+```
+
+
+```{r Visualisation avec tous les sujets}
+#1. Sélection des variables pertinentes
+data_drogue <- data[, c("Alcool_Sport", "Alcool_Scolaire", "Snus_Sport", "Snus_Scolaire", 
+                        "Cigarette_Sport", "Cigarette_Scolaire", 
+                        "Cigarette_Electronique_Sport", "Cigarette_Electronique_Scolaire",
+                        "Cannabis_Sport", "Cannabis_Scolaire")]
+
+#2. Vérification des données manquantes
+missing_data <- colSums(is.na(data_drogue))
+print("Données manquantes par variable :")
+print(missing_data)
+
+  # Suppression des observations contenant des valeurs manquantes
+data_drogue_clean <- na.omit(data_drogue)
+
+#3. Automatisation des Q-Q plots pour vérifier la distribution (non paramétrique)
+par(mfrow = c(2, 2))  # Configurer l'affichage en 2x2
+lapply(names(data_drogue_clean), function(var) {
+  qqnorm(data_drogue_clean[[var]], main = paste("Q-Q Plot :", var))
+  qqline(data_drogue_clean[[var]])
+  
+})
+
+  #Automatisation des Q-Q plots pour vérifier et indiquer la distribution
+lapply(names(data_drogue_clean), function(var) {
+  # Vérifier si toutes les valeurs sont identiques
+  if (length(unique(data_drogue_clean[[var]])) == 1) {
+    # Afficher un message si les valeurs sont identiques
+    plot.new()  # Créer un graphique vide
+    title(main = paste("Q-Q Plot :", var),
+          sub = "Impossible d'effectuer le test : toutes les valeurs sont identiques")
+  } else {
+    # Test de normalité avec Shapiro-Wilk
+    shapiro_result <- shapiro.test(data_drogue_clean[[var]])
+    
+    # Générer le sous-titre en fonction de la p-value
+    subtitle <- ifelse(shapiro_result$p.value < 0.05,
+                       "La distribution n'est pas normale (p < 0.05)",
+                       "La distribution est normale (p >= 0.05)")
+    
+    # Générer le Q-Q plot
+    qqnorm(data_drogue_clean[[var]], main = paste("Q-Q Plot :", var))
+    qqline(data_drogue_clean[[var]])
+    
+    # Ajouter le sous-titre au graphique
+    mtext(subtitle, side = 3, line = 0.5, cex = 0.8)
+  }
+})
+```
+
+```{r Matrice de corrélation avec tous les sujets}
+# 1. Sélection et préparation des données
+data_drogue <- data[, c("Alcool_Sport", "Alcool_Scolaire", "Snus_Sport", "Snus_Scolaire", 
+                        "Cigarette_Sport", "Cigarette_Scolaire", 
+                        "Cigarette_Electronique_Sport", "Cigarette_Electronique_Scolaire",
+                        "Cannabis_Sport", "Cannabis_Scolaire")]
+                        
+# Nettoyage des données manquantes
+data_drogue_clean <- na.omit(data_drogue)
+
+# 2. Réorganiser les données en séparant les contextes
+context_sport <- data_drogue_clean[, c("Alcool_Sport", "Snus_Sport", "Cigarette_Sport", 
+                                     "Cigarette_Electronique_Sport", "Cannabis_Sport")]
+context_scolaire <- data_drogue_clean[, c("Alcool_Scolaire", "Snus_Scolaire", "Cigarette_Scolaire", 
+                                        "Cigarette_Electronique_Scolaire", "Cannabis_Scolaire")]
+
+# Renommer les colonnes pour plus de clarté
+colnames(context_sport) <- c("Alcool", "Snus", "Cigarette", "Cigarette_Electronique", "Cannabis")
+colnames(context_scolaire) <- c("Alcool", "Snus", "Cigarette", "Cigarette_Electronique", "Cannabis")
+
+# 3. Calculer les corrélations et p-values sur la matrice complète
+matrice_combinee <- cbind(context_sport, context_scolaire)
+cor_results <- rcorr(as.matrix(matrice_combinee), type = "spearman")
+cor_mat <- cor_results$r
+p_values <- cor_results$P
+
+# 4. Correction des p-values avec Benjamini-Hochberg
+# Transformation de la matrice en vecteur pour la correction
+p_values_vector <- as.vector(p_values)
+p_values_vector[is.na(p_values_vector)] <- 1  # Remplacer NA par 1
+adjusted_p_values_vector <- p.adjust(p_values_vector, method = "BH")
+adjusted_p_values <- matrix(adjusted_p_values_vector, nrow = nrow(p_values))
+rownames(adjusted_p_values) <- rownames(p_values)
+colnames(adjusted_p_values) <- colnames(p_values)
+
+# 5. Affichage des résultats dans la console
+print("Matrice de corrélation (Spearman) :")
+print(cor_mat)
+print("P-values corrigées (Benjamini-Hochberg) :")
+print(adjusted_p_values)
+
+# 6. Extraire la partie de la matrice qui croise les deux contextes
+cor_cross_contexts <- cor_mat[1:5, 6:10]
+p_values_cross <- adjusted_p_values[1:5, 6:10]
+rownames(cor_cross_contexts) <- c("Alcool", "Snus", "Cigarette", "Cigarette_Electronique", "Cannabis")
+colnames(cor_cross_contexts) <- c("Alcool", "Snus", "Cigarette", "Cigarette_Electronique", "Cannabis")
+rownames(p_values_cross) <- rownames(cor_cross_contexts)
+colnames(p_values_cross) <- colnames(cor_cross_contexts)
+
+# 7. Créer une fonction pour ajouter des astérisques selon la significativité
+add_significance <- function(cor_value, p_value) {
+  if (is.na(p_value)) return(sprintf("%.2f", cor_value))
+  if (p_value < 0.001) return(sprintf("%.2f***", cor_value))
+  if (p_value < 0.01) return(sprintf("%.2f**", cor_value))
+  if (p_value < 0.05) return(sprintf("%.2f*", cor_value))
+  return(sprintf("%.2f", cor_value))
+}
+
+# 8. Préparer les données pour la visualisation principale
+melted_cor <- melt(cor_cross_contexts)
+melted_p <- melt(p_values_cross)
+colnames(melted_cor) <- c("Sport", "Scolaire", "Correlation")
+colnames(melted_p) <- c("Sport", "Scolaire", "P_Value")
+
+# Combiner les dataframes
+vis_data <- cbind(melted_cor, P_Value = melted_p$P_Value)
+vis_data$Label <- mapply(add_significance, vis_data$Correlation, vis_data$P_Value)
+
+# 9. Visualisation principale: Corrélations entre contextes avec significativité
+ggplot(data = vis_data, aes(x = Sport, y = Scolaire, fill = Correlation)) +
+  geom_tile() +
+  geom_text(aes(label = Label), size = 3) +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       midpoint = 0, limit = c(-1, 1), name = "Corr") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5),
+        plot.caption = element_text(hjust = 0.5))+
+  labs(title = "Corrélations entre contextes sportif et scolaire",
+       subtitle = "* p<0.05, ** p<0.01, *** p<0.001",
+       x = "Contexte sportif",
+       y = "Contexte scolaire",
+       caption = "Rouge: forte corrélation positive | Bleu: forte corrélation négative | Blanc ou gris: faible corrélation\nLes valeurs NA signifient une absence de données.")
+
+# 10. Analyses spécifiques au sein de chaque contexte
+# Pour le contexte sportif
+cor_sport_results <- rcorr(as.matrix(context_sport), type = "spearman")
+cor_sport <- cor_sport_results$r
+p_sport <- cor_sport_results$P
+p_sport_adj <- matrix(p.adjust(as.vector(p_sport), method = "BH"), nrow = nrow(p_sport))
+rownames(p_sport_adj) <- rownames(p_sport)
+colnames(p_sport_adj) <- colnames(p_sport)
+
+# Visualisation contexte sportif
+melted_sport <- melt(cor_sport)
+melted_p_sport <- melt(p_sport_adj)
+sport_data <- cbind(melted_sport, P_Value = melted_p_sport$value)
+colnames(sport_data) <- c("Variable1", "Variable2", "Correlation", "P_Value")
+sport_data$Label <- mapply(add_significance, sport_data$Correlation, sport_data$P_Value)
+
+ggplot(data = sport_data, aes(x = Variable1, y = Variable2, fill = Correlation)) +
+  geom_tile() +
+  geom_text(aes(label = Label), size = 3) +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       midpoint = 0, limit = c(-1, 1), name = "Corr") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = 0.5),
+        plot.caption = element_text(hjust = 0.5))+
+  labs(title = "Corrélations dans le contexte sportif",
+       subtitle = "* p<0.05, ** p<0.01, *** p<0.001",
+       x = "",
+       y = "",
+       caption = "Rouge: forte corrélation positive | Bleu: forte corrélation négative | Blanc ou gris: faible corrélation\nLes valeurs NA signifient une absence de données.")
+
+# Pour le contexte scolaire
+cor_scolaire_results <- rcorr(as.matrix(context_scolaire), type = "spearman")
+cor_scolaire <- cor_scolaire_results$r
+p_scolaire <- cor_scolaire_results$P
+p_scolaire_adj <- matrix(p.adjust(as.vector(p_scolaire), method = "BH"), nrow = nrow(p_scolaire))
+rownames(p_scolaire_adj) <- rownames(p_scolaire)
+colnames(p_scolaire_adj) <- colnames(p_scolaire)
+
+# Visualisation contexte scolaire
+melted_scolaire <- melt(cor_scolaire)
+melted_p_scolaire <- melt(p_scolaire_adj)
+scolaire_data <- cbind(melted_scolaire, P_Value = melted_p_scolaire$value)
+colnames(scolaire_data) <- c("Variable1", "Variable2", "Correlation", "P_Value")
+scolaire_data$Label <- mapply(add_significance, scolaire_data$Correlation, scolaire_data$P_Value)
+
+ggplot(data = scolaire_data, aes(x = Variable1, y = Variable2, fill = Correlation)) +
+  geom_tile() +
+  geom_text(aes(label = Label), size = 3) +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       midpoint = 0, limit = c(-1, 1), name = "Corr") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = 0.5),
+        plot.caption = element_text(hjust = 0.5)) +
+  labs(title = "Corrélations dans le contexte scolaire",
+       subtitle = "* p<0.05, ** p<0.01, *** p<0.001",
+       x = "",
+       y = "",
+       caption = "Rouge: forte corrélation positive | Bleu: forte corrélation négative | Blanc ou gris: faible corrélation\nLes valeurs NA signifient une absence de données.")
+```
+```{r Stats des consommateurs}
+# Nombre de consommateurs par substance et contexte
+nombre_consommateurs <- list()
+
+# Pour le contexte sportif
+nombre_consommateurs$Alcool_Sport <- sum(data_drogue$Alcool_Sport >= 1, na.rm = TRUE)
+nombre_consommateurs$Snus_Sport <- sum(data_drogue$Snus_Sport >= 1, na.rm = TRUE)
+nombre_consommateurs$Cigarette_Sport <- sum(data_drogue$Cigarette_Sport >= 1, na.rm = TRUE)
+nombre_consommateurs$Cigarette_Electronique_Sport <- sum(data_drogue$Cigarette_Electronique_Sport >= 1, na.rm = TRUE)
+nombre_consommateurs$Cannabis_Sport <- sum(data_drogue$Cannabis_Sport >= 1, na.rm = TRUE)
+
+# Pour le contexte scolaire
+nombre_consommateurs$Alcool_Scolaire <- sum(data_drogue$Alcool_Scolaire >= 1, na.rm = TRUE)
+nombre_consommateurs$Snus_Scolaire <- sum(data_drogue$Snus_Scolaire >= 1, na.rm = TRUE)
+nombre_consommateurs$Cigarette_Scolaire <- sum(data_drogue$Cigarette_Scolaire >= 1, na.rm = TRUE)
+nombre_consommateurs$Cigarette_Electronique_Scolaire <- sum(data_drogue$Cigarette_Electronique_Scolaire >= 1, na.rm = TRUE)
+nombre_consommateurs$Cannabis_Scolaire <- sum(data_drogue$Cannabis_Scolaire >= 1, na.rm = TRUE)
+
+# Nombre total de consommateurs uniques (au moins une substance dans un contexte)
+nombre_consommateurs$Total_Uniques <- sum(rowSums(data_drogue >= 1, na.rm = TRUE) > 0, na.rm = TRUE)
+
+# Créer un tableau résumé
+substances <- c("Alcool", "Snus", "Cigarette", "Cigarette_Electronique", "Cannabis")
+contextes <- c("Sport", "Scolaire")
+resultat_tableau <- matrix(0, nrow = length(substances), ncol = length(contextes))
+rownames(resultat_tableau) <- substances
+colnames(resultat_tableau) <- contextes
+
+for (substance in substances) {
+  for (contexte in contextes) {
+    col_name <- paste0(substance, "_", contexte)
+    resultat_tableau[substance, contexte] <- nombre_consommateurs[[col_name]]
+  }
+}
+
+# Ajouter une ligne pour les totaux par contexte
+resultat_tableau <- rbind(resultat_tableau, 
+                          Total = c(sum(rowSums(context_sport >= 1, na.rm = TRUE) > 0, na.rm = TRUE),
+                                    sum(rowSums(context_scolaire >= 1, na.rm = TRUE) > 0, na.rm = TRUE)))
+
+print("Tableau résumé du nombre de consommateurs :")
+print(resultat_tableau)
+
+# Identifier les consommateurs dans chaque contexte
+consommateurs_sport <- rowSums(data_drogue[, c("Alcool_Sport", "Snus_Sport", "Cigarette_Sport", 
+                                              "Cigarette_Electronique_Sport", "Cannabis_Sport")] >= 1, na.rm = TRUE) > 0
+consommateurs_scolaire <- rowSums(data_drogue[, c("Alcool_Scolaire", "Snus_Scolaire", "Cigarette_Scolaire", 
+                                                 "Cigarette_Electronique_Scolaire", "Cannabis_Scolaire")] >= 1, na.rm = TRUE) > 0
+
+# Compter les croisements
+nombre_consommateurs$Sport_Uniquement <- sum(consommateurs_sport & !consommateurs_scolaire, na.rm = TRUE)
+nombre_consommateurs$Scolaire_Uniquement <- sum(!consommateurs_sport & consommateurs_scolaire, na.rm = TRUE)
+nombre_consommateurs$Les_Deux_Contextes <- sum(consommateurs_sport & consommateurs_scolaire, na.rm = TRUE)
+
+print("Répartition des consommateurs par contexte :")
+print(paste("Contexte sportif uniquement:", nombre_consommateurs$Sport_Uniquement))
+print(paste("Contexte scolaire uniquement:", nombre_consommateurs$Scolaire_Uniquement))
+print(paste("Les deux contextes:", nombre_consommateurs$Les_Deux_Contextes))
+
+# Analyser les chevauchements par substance
+chevauchements <- list()
+
+for (substance in substances) {
+  col_sport <- paste0(substance, "_Sport")
+  col_scolaire <- paste0(substance, "_Scolaire")
+  
+  # Consommateurs de cette substance dans chaque contexte
+  cons_sport <- data_drogue[[col_sport]] >= 1
+  cons_scolaire <- data_drogue[[col_scolaire]] >= 1
+  
+  # Calculer les chevauchements
+  chevauchements[[paste0(substance, "_Sport_Uniquement")]] <- sum(cons_sport & !cons_scolaire, na.rm = TRUE)
+  chevauchements[[paste0(substance, "_Scolaire_Uniquement")]] <- sum(!cons_sport & cons_scolaire, na.rm = TRUE)
+  chevauchements[[paste0(substance, "_Les_Deux_Contextes")]] <- sum(cons_sport & cons_scolaire, na.rm = TRUE)
+}
+
+# Créer un tableau résumé des chevauchements
+tableau_chevauchements <- matrix(0, nrow = length(substances), ncol = 3)
+rownames(tableau_chevauchements) <- substances
+colnames(tableau_chevauchements) <- c("Sport uniquement", "Scolaire uniquement", "Les deux contextes")
+
+for (i in 1:length(substances)) {
+  substance <- substances[i]
+  tableau_chevauchements[i, 1] <- chevauchements[[paste0(substance, "_Sport_Uniquement")]]
+  tableau_chevauchements[i, 2] <- chevauchements[[paste0(substance, "_Scolaire_Uniquement")]]
+  tableau_chevauchements[i, 3] <- chevauchements[[paste0(substance, "_Les_Deux_Contextes")]]
+}
+
+print("Tableau de chevauchements par substance :")
+print(tableau_chevauchements)
+
+# Pour le contexte sportif
+nb_substances_sport <- rowSums(data_drogue[, c("Alcool_Sport", "Snus_Sport", "Cigarette_Sport", 
+                                               "Cigarette_Electronique_Sport", "Cannabis_Sport")] >= 1, na.rm = TRUE)
+plusieurs_drogues_sport <- nb_substances_sport >= 2
+
+# Pour le contexte scolaire
+nb_substances_scolaire <- rowSums(data_drogue[, c("Alcool_Scolaire", "Snus_Scolaire", "Cigarette_Scolaire", 
+                                                  "Cigarette_Electronique_Scolaire", "Cannabis_Scolaire")] >= 1, na.rm = TRUE)
+plusieurs_drogues_scolaire <- nb_substances_scolaire >= 2
+
+# Nombre d'individus concernés
+cat("Nombre d'individus ayant consommé plusieurs drogues en contexte sportif :", sum(plusieurs_drogues_sport, na.rm=TRUE), "\n")
+cat("Nombre d'individus ayant consommé plusieurs drogues en contexte scolaire :", sum(plusieurs_drogues_scolaire, na.rm=TRUE), "\n")
+plusieurs_drogues_les_deux <- plusieurs_drogues_sport & plusieurs_drogues_scolaire
+cat("Nombre d'individus ayant consommé plusieurs drogues dans les deux contextes :", sum(plusieurs_drogues_les_deux, na.rm=TRUE), "\n")
+
+# Pour chaque individu, lister les substances consommées dans chaque contexte
+get_substances <- function(row, context) {
+  substances <- c("Alcool", "Snus", "Cigarette", "Cigarette_Electronique", "Cannabis")
+  cols <- paste0(substances, "_", context)
+  consumed <- substances[row[cols] >= 1]
+  return(consumed)
+}
+
+# Appliquer à chaque individu
+poly_types <- data.frame(
+  Poly_Sport = plusieurs_drogues_sport,
+  Poly_Scolaire = plusieurs_drogues_scolaire,
+  Poly_Deux = plusieurs_drogues_les_deux,
+  Type = NA_character_
+)
+
+for (i in 1:nrow(data_drogue)) {
+  sport_subs <- get_substances(data_drogue[i, ], "Sport")
+  scolaire_subs <- get_substances(data_drogue[i, ], "Scolaire")
+  
+  if (length(sport_subs) >= 2 & length(scolaire_subs) < 2) {
+    poly_types$Type[i] <- "Polyconsommation Sport uniquement"
+  } else if (length(sport_subs) < 2 & length(scolaire_subs) >= 2) {
+    poly_types$Type[i] <- "Polyconsommation Scolaire uniquement"
+  } else if (length(sport_subs) >= 2 & length(scolaire_subs) >= 2) {
+    if (setequal(sport_subs, scolaire_subs)) {
+      poly_types$Type[i] <- "Polyconsommation identique dans les deux contextes"
+    } else {
+      poly_types$Type[i] <- "Polyconsommation différente selon le contexte"
+    }
+  }
+}
+
+# Résumé des résultats
+table(poly_types$Type)
+```
+
+```{r Matrice de corrélation exploratoire}
+# 1. Sélection et préparation des données
+data_exploratoire <- data[,c("Visualisation_Sport", "Parler_Coach", "Dormir_Plus_Sport", "Cannabis_Sport",
+                            "Garder_Sentiments_Sport", "Aide_Pro_Sport", "Alcool_Sport", "Manger_Boire_Plaisir_Sport",
+                            "Cigarette_Sport", "Ecrans_Sport", "Modifier_Habitudes_Sport", "Isolement_Sport", 
+                            "Eloignement_Pole_Sport", "Lecture_Sport", "Musique_Sport", "Priere_Sport", 
+                            "Inspiration_Modele_Sport", "Fete_Sport", "Manger_Plus_Sport", "Pas_Changement_Sport", 
+                            "Snus_Sport", "Voir_Amis_Sport", "Travail_Plus_Sport", "Jeux_Video_Sport",
+                            "Cigarette_Electronique_Sport", "Visualisation_Scolaire", "Parler_Professeur", 
+                            "Dormir_Plus_Scolaire", "Cannabis_Scolaire", "Garder_Sentiments_Scolaire", 
+                            "Aide_Pro_Scolaire", "Alcool_Scolaire", "Manger_Boire_Plaisir_Scolaire", 
+                            "Cigarette_Scolaire", "Ecrans_Scolaire", "Modifier_Habitudes_Scolaire", 
+                            "Isolement_Scolaire", "Eloignement_Pole_Scolaire", "Lecture_Scolaire", 
+                            "Musique_Scolaire", "Priere_Scolaire", "Inspiration_Modele_Scolaire", 
+                            "Fete_Scolaire", "Manger_Plus_Scolaire", "Pas_Changement_Scolaire", 
+                            "Snus_Scolaire", "Voir_Amis_Scolaire", "Travail_Plus_Scolaire", 
+                            "Jeux_Video_Scolaire", "Cigarette_Electronique_Scolaire")]
+
+# Nettoyage des données manquantes
+data_exploratoire_clean <- na.omit(data_exploratoire)
+
+# 2. Réorganiser les données en séparant les contextes
+context_sport_exploratoire <- data_exploratoire_clean[, 1:25]
+context_scolaire_exploratoire <- data_exploratoire_clean[, 26:50]
+
+# Création des noms de variables à utiliser dans les deux contextes
+var_names <- c("Visualiser l'évènement", "Parler à mon coach/professeur", "Dormir Plus", 
+               "Consommer du cannabis", "Garder ses sentiments pour soi", 
+               "Demander une aide professionelle", "Boire de l'alcool", 
+               "Manger et Boire des aliments qui font plaisir", "Fumer une cigarette", 
+               "Passer du temps devant les écrans", "Modifier mes habitudes", "M'isoler", 
+               "M'éloigner du Pôle Espoir", "Lire", "Écouter de la musique", "Prier", 
+               "M'inspirer de personnalités/modèles", "Faire la fête", "Manger plus", 
+               "Ne rien changer", "Consommer du Snus", "Voir des amis", "Travailler plus", 
+               "Jouer à des jeux vidéos", "Utiliser une cigarette électronique")
+
+# Renommer les colonnes pour plus de clarté
+colnames(context_scolaire_exploratoire) <- var_names
+colnames(context_sport_exploratoire) <- var_names
+
+
+# 3. Fonction pour ajouter des astérisques selon la significativité
+add_significance <- function(cor_value_exploratoire, p_value_exploratoire) {
+  if (is.na(p_value_exploratoire)) return(sprintf("%.2f", cor_value_exploratoire))
+  if (p_value_exploratoire < 0.001) return(sprintf("%.2f***", cor_value_exploratoire))
+  if (p_value_exploratoire < 0.01) return(sprintf("%.2f**", cor_value_exploratoire))
+  if (p_value_exploratoire < 0.05) return(sprintf("%.2f*", cor_value_exploratoire))
+  return(sprintf("%.2f", cor_value_exploratoire))
+}
+
+# 4. Fonction pour obtenir les corrélations significatives
+get_significant_correlations <- function(cor_matrix, p_matrix, p_threshold = 0.05) {
+  # Créer des vecteurs pour stocker les résultats
+  var1 <- character()
+  var2 <- character()
+  corr <- numeric()
+  p_val <- numeric()
+  
+  # Parcourir la matrice
+  for (i in 1:nrow(cor_matrix)) {
+    for (j in 1:ncol(cor_matrix)) {
+      # Ne garder que les corrélations significatives et éviter la diagonale
+      if (p_matrix[i,j] <= p_threshold && i != j) {
+        var1 <- c(var1, rownames(cor_matrix)[i])
+        var2 <- c(var2, colnames(cor_matrix)[j])
+        corr <- c(corr, cor_matrix[i,j])
+        p_val <- c(p_val, p_matrix[i,j])
+      }
+    }
+  }
+  
+  # Créer le dataframe
+  result <- data.frame(
+    Variable1 = var1,
+    Variable2 = var2,
+    Correlation = corr,
+    P_Value = p_val
+  )
+  
+  # Si le dataframe n'est pas vide, trier par force de corrélation
+  if(nrow(result) > 0) {
+    result <- result[order(abs(result$Correlation), decreasing = TRUE),]
+  }
+  
+  return(result)
+}
+
+# 5. Fonction pour visualiser les corrélations significatives
+plot_significant_correlations <- function(cor_matrix, p_matrix, title, p_threshold = 0.05) {
+  # Créer une copie de la matrice de corrélation
+  filtered_cor <- cor_matrix
+  
+  # Mettre à NA les corrélations non significatives
+  filtered_cor[p_matrix > p_threshold] <- NA
+  
+  # Convertir en format long pour ggplot
+  melted_cor <- melt(filtered_cor)
+  colnames(melted_cor) <- c("Var1", "Var2", "Correlation")
+  
+  # Supprimer les NA (corrélations non significatives)
+  melted_cor <- melted_cor[!is.na(melted_cor$Correlation),]
+  
+  # Si pas de corrélations significatives, retourner NULL
+  if(nrow(melted_cor) == 0) return(NULL)
+  
+  # Ajouter les p-values
+  melted_p <- melt(p_matrix)
+  colnames(melted_p) <- c("Var1", "Var2", "P_Value")
+  
+  # Convertir Var1 et Var2 en caractères pour éviter les problèmes de facteurs
+  melted_cor$Var1 <- as.character(melted_cor$Var1)
+  melted_cor$Var2 <- as.character(melted_cor$Var2)
+  melted_p$Var1 <- as.character(melted_p$Var1)
+  melted_p$Var2 <- as.character(melted_p$Var2)
+  
+  # Joindre les p-values aux corrélations
+  vis_data <- merge(melted_cor, melted_p, by=c("Var1", "Var2"))
+  
+  # Créer les étiquettes avec astérisques
+  vis_data$Label <- mapply(add_significance, vis_data$Correlation, vis_data$P_Value)
+  
+  # Supprimer la diagonale (corrélations entre une variable et elle-même)
+  vis_data <- vis_data[vis_data$Var1 != vis_data$Var2,]
+  
+  # Visualisation
+  ggplot(data = vis_data, aes(x = Var1, y = Var2, fill = Correlation)) +
+    geom_tile() +
+    geom_text(aes(label = Label), size = 3) +
+    scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                         midpoint = 0, limit = c(-1, 1), name = "Corr") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          plot.title = element_text(hjust = 0.5),
+          plot.subtitle = element_text(hjust = 0.5)) +
+    labs(title = title,
+         subtitle = "* p<0.05, ** p<0.01, *** p<0.001",
+         x = "",
+         y = "",
+         caption = "Rouge: forte corrélation positive | Bleu: forte corrélation négative | Blanc ou gris: faible corrélation")
+}
+
+# 6. Calculer les corrélations pour le contexte sportif
+cor_sport_results <- rcorr(as.matrix(context_sport_exploratoire), type = "spearman")
+cor_sport <- cor_sport_results$r
+p_sport <- cor_sport_results$P
+p_sport_adj <- matrix(p.adjust(as.vector(p_sport), method = "BH"), nrow = nrow(p_sport))
+rownames(p_sport_adj) <- rownames(p_sport)
+colnames(p_sport_adj) <- colnames(p_sport)
+
+# 7. Calculer les corrélations pour le contexte scolaire
+cor_scolaire_results <- rcorr(as.matrix(context_scolaire_exploratoire), type = "spearman")
+cor_scolaire <- cor_scolaire_results$r
+p_scolaire <- cor_scolaire_results$P
+p_scolaire_adj <- matrix(p.adjust(as.vector(p_scolaire), method = "BH"), nrow = nrow(p_scolaire))
+rownames(p_scolaire_adj) <- rownames(p_scolaire)
+colnames(p_scolaire_adj) <- colnames(p_scolaire)
+
+# 8. Visualiser uniquement les corrélations significatives
+# Pour le contexte sportif
+sig_plot_sport <- plot_significant_correlations(
+  cor_sport, 
+  p_sport_adj,
+  "Corrélations significatives dans le contexte sportif"
+)
+
+# Pour le contexte scolaire
+sig_plot_scolaire <- plot_significant_correlations(
+  cor_scolaire, 
+  p_scolaire_adj,
+  "Corrélations significatives dans le contexte scolaire"
+)
+
+# 9. Afficher les graphiques significatifs (si présents)
+if (!is.null(sig_plot_sport)) print(sig_plot_sport)
+if (!is.null(sig_plot_scolaire)) print(sig_plot_scolaire) 
+```
+```{r Matrice pour le croisement sportif /scolaire}
+# Fonction pour ajouter des astérisques selon la significativité
+add_significance <- function(cor_value, p_value) {
+  if (is.na(p_value)) return(sprintf("%.2f", cor_value))
+  if (p_value < 0.001) return(sprintf("%.2f***", cor_value))
+  if (p_value < 0.01) return(sprintf("%.2f**", cor_value))
+  if (p_value < 0.05) return(sprintf("%.2f*", cor_value))
+  return(sprintf("%.2f", cor_value))
+}
+
+# Fonction pour visualiser les corrélations croisées entre contextes sportif et scolaire
+plot_cross_correlations <- function(cor_matrix, p_matrix, title, p_threshold = 0.05) {
+  # Créer une copie de la matrice de corrélation
+  filtered_cor <- cor_matrix
+  
+  # Mettre à NA les corrélations non significatives
+  filtered_cor[p_matrix > p_threshold] <- NA
+  
+  # Convertir en format long pour ggplot
+  melted_cor <- reshape2::melt(filtered_cor)
+  colnames(melted_cor) <- c("Var1", "Var2", "Correlation")
+  
+  # Supprimer les NA (corrélations non significatives)
+  melted_cor <- melted_cor[!is.na(melted_cor$Correlation),]
+  
+  # Si pas de corrélations significatives, retourner NULL
+  if(nrow(melted_cor) == 0) return(NULL)
+  
+  # Ajouter les p-values
+  melted_p <- reshape2::melt(p_matrix)
+  colnames(melted_p) <- c("Var1", "Var2", "P_Value")
+  
+  # Convertir Var1 et Var2 en caractères pour éviter les problèmes de facteurs
+  melted_cor$Var1 <- as.character(melted_cor$Var1)
+  melted_cor$Var2 <- as.character(melted_cor$Var2)
+  melted_p$Var1 <- as.character(melted_p$Var1)
+  melted_p$Var2 <- as.character(melted_p$Var2)
+  
+  # Joindre les p-values aux corrélations
+  vis_data <- merge(melted_cor, melted_p, by=c("Var1", "Var2"))
+  
+  # Créer les étiquettes avec astérisques
+  vis_data$Label <- mapply(add_significance, vis_data$Correlation, vis_data$P_Value)
+  
+  # Noter: ici on inverse les axes par rapport à votre code original pour avoir:
+  # - X = contexte sportif (Var2 de la matrice croisée)
+  # - Y = contexte scolaire (Var1 de la matrice croisée)
+  
+  # Visualisation avec les axes inversés
+  ggplot(data = vis_data, aes(x = Var2, y = Var1, fill = Correlation)) +
+    geom_tile() +
+    geom_text(aes(label = Label), size = 3) +
+    scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                         midpoint = 0, limit = c(-1, 1), name = "Corr") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          plot.title = element_text(hjust = 0.5),
+          plot.subtitle = element_text(hjust = 0.5)) +
+    labs(title = title,
+         subtitle = "* p<0.05, ** p<0.01, *** p<0.001",
+         x = "Contexte sportif",
+         y = "Contexte scolaire",
+         caption = "Rouge: forte corrélation positive | Bleu: forte corrélation négative | Blanc ou gris: faible corrélation")
+}
+
+# Réutiliser les données existantes pour calculer les corrélations croisées
+
+# Calcul des corrélations croisées
+matrice_combinee <- cbind(context_sport_exploratoire, context_scolaire_exploratoire)
+cor_results_all <- Hmisc::rcorr(as.matrix(matrice_combinee), type = "spearman")
+cor_mat_all <- cor_results_all$r
+p_values_all <- cor_results_all$P
+
+# Correction des p-values avec Benjamini-Hochberg
+p_values_adj_all <- matrix(p.adjust(as.vector(p_values_all), method = "BH"), 
+                          nrow = nrow(p_values_all))
+rownames(p_values_adj_all) <- rownames(p_values_all)
+colnames(p_values_adj_all) <- colnames(p_values_all)
+
+# Extraire la partie croisée (cette fois en inversant l'ordre pour avoir scolaire en Y et sportif en X)
+cor_cross_contexts <- cor_mat_all[26:50, 1:25]  # Scolaire (Y) x Sportif (X)
+p_values_cross <- p_values_adj_all[26:50, 1:25]
+
+# Visualiser la matrice croisée avec l'orientation demandée
+sig_plot_cross <- plot_cross_correlations(
+  cor_cross_contexts, 
+  p_values_cross,
+  "Corrélations significatives entre contextes sportif et scolaire"
+)
+
+# Afficher le graphique
+print(sig_plot_cross)
+```
+
+
+
+
+
+
