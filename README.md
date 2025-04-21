@@ -5,4 +5,4 @@ Elouan RABREAU (2SEP) et Gabriel SAID (2SEP) sous la direction de Stéphane HÉA
 ---
 
 ## Description
-Mémoire visant à évaluer la consommation de substances psychoactives des sportifs espoirs afin de réguler le stress provenant d'un évènement sportif ou scolaire. 56 sportifs-espoirs provenant d'un pôle espoir judo et d'un pôle espoir basket ont participé à ce mémoire. 
+Ces documents proviennent d'un mémoire de Sciences Humaines et Sociales réalisé à l'ENS de Rennes. Ce mémoire portait sur la consommation de substances psychoactives par les sportifs-espoirs dans le cadre de leur cursus en pôle espoir. 56 sportifs-espoirs provenant d'un pôle espoir judo et d'un pôle espoir basket ont participé à ce mémoire. 
